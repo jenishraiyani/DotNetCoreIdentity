@@ -1,7 +1,9 @@
-﻿using Microsoft.AspNetCore.Http;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
+using System.ComponentModel.DataAnnotations;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
@@ -162,5 +164,61 @@ namespace User.Management.API.Controllers
 
         }
 
+        [HttpPost]
+        [AllowAnonymous]
+        [Route("forgot-password")]
+        public async Task<IActionResult> ForgotPassword(string email)
+        {
+            var user = await _userManager.FindByEmailAsync(email);
+            if (user != null)
+            {
+                var token = await _userManager.GeneratePasswordResetTokenAsync(user);
+                var forgotPasswordLink = Url.Action(nameof(ResetPassword),"Authentication", new {token, email= user.Email},Request.Scheme);
+                var message = new Message(new string[] { user.Email! }, "Forgot Password link", forgotPasswordLink);
+                _emailService.SendEmail(message);
+                return StatusCode(StatusCodes.Status200OK,
+                    new Response { Status = "Success", Message = $"Password change request sent on Email {user.Email} Successfully" });
+            }
+            return StatusCode(StatusCodes.Status404NotFound,
+            new Response { Status = "Error", Message = $"Could not send link to email, please try again." });
+
+        }
+        [HttpGet]
+        [AllowAnonymous]
+        [Route("reset-password")]
+        public async Task<IActionResult> ResetPassword(string email,string token)
+        {
+            var model = new ResetPassword { Token= token , Email = email};
+            return Ok(new
+            {
+                model
+            });
+
+        }
+
+        [HttpPost]
+        [AllowAnonymous]
+        [Route("reset-password")]
+        public async Task<IActionResult> ResetPassword(ResetPassword resetPassword)
+        {
+            var user = await _userManager.FindByEmailAsync(resetPassword.Email);
+            if(user != null)
+            {
+                var resetPassResult = await _userManager.ResetPasswordAsync(user, resetPassword.Token, resetPassword.Password);
+                if(!resetPassResult.Succeeded)
+                {
+                    foreach(var error in resetPassResult.Errors)
+                    {
+                        ModelState.AddModelError(error.Code, error.Description);
+                    }
+                    return Ok(ModelState);
+                }
+                return StatusCode(StatusCodes.Status200OK,
+                  new Response { Status = "Success", Message = $"Password has been changed" });
+            }
+            return StatusCode(StatusCodes.Status404NotFound,
+                new Response { Status = "Error", Message = $"Someting went wrong" });
+
+        }
     }
 }
