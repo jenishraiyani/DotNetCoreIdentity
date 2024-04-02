@@ -18,17 +18,21 @@ namespace User.Management.API.Controllers
     public class AuthenticationController : ControllerBase
     {
         private readonly UserManager<IdentityUser> _userManager;
+        private readonly SignInManager<IdentityUser> _signInManager;
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly IConfiguration _configuration;
         private readonly IEmailService _emailService;
          
         public AuthenticationController(UserManager<IdentityUser> userManager,
-            RoleManager<IdentityRole> roleManager, IConfiguration configuration, IEmailService emailService)
+            RoleManager<IdentityRole> roleManager, IConfiguration configuration, 
+            SignInManager<IdentityUser> signInManager,
+            IEmailService emailService)
         {
             _userManager = userManager;
             _roleManager = roleManager;
             _configuration = configuration;
             _emailService = emailService;
+            _signInManager= signInManager;
         }
 
         [HttpPost]
@@ -44,7 +48,8 @@ namespace User.Management.API.Controllers
             {
                 Email = registerUser.Email,
                 SecurityStamp = Guid.NewGuid().ToString(),
-                UserName = registerUser.UserName
+                UserName = registerUser.UserName,
+                TwoFactorEnabled = true
             };
 
             if(await _roleManager.RoleExistsAsync(role))
@@ -71,18 +76,7 @@ namespace User.Management.API.Controllers
             }
             
         }
-
-
-        //[HttpGet]
-        //public IActionResult TestEmail()
-        //{
-        //    var message =
-        //        new Message(new string[] { "jenishraiyani74@gmail.com" }, "Test", "<h1>Subscribe to my channel</h1>");
-        //    _emailService.SendEmail(message);
-        //    return StatusCode(StatusCodes.Status403Forbidden,
-        //         new Response { Status = "Error", Message = "User already exists!" });
-        //}
-
+ 
         [HttpGet]
         public async Task<IActionResult> ConfirmEmail(string token, string email)
         {
@@ -105,26 +99,51 @@ namespace User.Management.API.Controllers
         public async Task<IActionResult> Login([FromBody] LoginModel loginModel)
         {
             var user = await _userManager.FindByNameAsync(loginModel.Username);
-            if (user != null && await _userManager.CheckPasswordAsync(user,loginModel.Password))
+            if (user.TwoFactorEnabled)
             {
-                var authClaims = new List<Claim>
-                {
-                    new Claim(ClaimTypes.Name,user.UserName),
-                    new Claim(JwtRegisteredClaimNames.Jti,Guid.NewGuid().ToString())
-                };
-                var userRoles = await _userManager.GetRolesAsync(user);
-                foreach(var role in userRoles)
-                {
-                    authClaims.Add(new Claim(ClaimTypes.Role,role));
-                }
-                var jwtToken = GetToken(authClaims);
-                return Ok(new
-                {
-                    token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
-                    expiration = jwtToken.ValidTo
-                });
+                await _signInManager.SignOutAsync();
+                await _signInManager.PasswordSignInAsync(user, loginModel.Password,false,true);
+                var token = await _userManager.GenerateTwoFactorTokenAsync(user, "Email");
+                var message = new Message(new string[] { user.Email! }, "OTP Confirmation", token);
+                _emailService.SendEmail(message);
+                return StatusCode(StatusCodes.Status200OK,
+               new Response { Status = "Success", Message = $"We have sent you ans OTP to your Email {user.Email}" });
+
             }
             return Unauthorized();
+
+        }
+
+        [HttpPost]
+        [Route("login-2FA")]
+        public async Task<IActionResult> LoginWithOTP(string code,string username)
+        {
+            var user = await _userManager.FindByNameAsync(username);
+            var signIn = await _signInManager.TwoFactorSignInAsync("Email", code, false, false);
+            if(signIn.Succeeded)
+            {
+                    if (user != null)
+                    {
+                        var authClaims = new List<Claim>
+                    {
+                        new Claim(ClaimTypes.Name,user.UserName),
+                        new Claim(JwtRegisteredClaimNames.Jti,Guid.NewGuid().ToString())
+                    };
+                    var userRoles = await _userManager.GetRolesAsync(user);
+                    foreach (var role in userRoles)
+                    {
+                        authClaims.Add(new Claim(ClaimTypes.Role, role));
+                    }
+                    var jwtToken = GetToken(authClaims);
+                    return Ok(new
+                    {
+                        token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
+                        expiration = jwtToken.ValidTo
+                    });
+                }
+            }
+            return StatusCode(StatusCodes.Status404NotFound,
+                 new Response { Status = "Error", Message = "Invalid Code" });
 
         }
 
