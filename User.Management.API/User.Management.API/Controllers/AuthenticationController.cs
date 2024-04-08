@@ -8,8 +8,8 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using User.Management.API.Models;
-using User.Management.API.Models.Authentication.Login;
-using User.Management.API.Models.Authentication.SignUp;
+using User.Management.Service.Models.Authentication.Login;
+using User.Management.Service.Models.Authentication.SignUp;
 using User.Management.Service.Models;
 using User.Management.Service.Service;
 
@@ -24,59 +24,37 @@ namespace User.Management.API.Controllers
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly IConfiguration _configuration;
         private readonly IEmailService _emailService;
+        private readonly IUserManagement _user;
          
         public AuthenticationController(UserManager<IdentityUser> userManager,
             RoleManager<IdentityRole> roleManager, IConfiguration configuration, 
             SignInManager<IdentityUser> signInManager,
-            IEmailService emailService)
+            IEmailService emailService,
+            IUserManagement user)
         {
             _userManager = userManager;
             _roleManager = roleManager;
             _configuration = configuration;
             _emailService = emailService;
             _signInManager= signInManager;
+            _user = user;
         }
 
         [HttpPost]
-        public async Task<IActionResult> Register([FromBody] RegisterUser registerUser, string role)
+        public async Task<IActionResult> Register([FromBody] RegisterUser registerUser)
         {
-            var userExist = await _userManager.FindByEmailAsync(registerUser.Email);
-            if (userExist != null)
+            var tokenResponse = await _user.CreateUserWithTokenAsync(registerUser);
+            if (tokenResponse.IsSuccess)
             {
-                return StatusCode(StatusCodes.Status403Forbidden,
-                    new Response { Status = "Error", Message = "User already exists!" });
-            }
-            IdentityUser user = new()
-            {
-                Email = registerUser.Email,
-                SecurityStamp = Guid.NewGuid().ToString(),
-                UserName = registerUser.UserName,
-                TwoFactorEnabled = true
-            };
-
-            if(await _roleManager.RoleExistsAsync(role))
-            {
-                var result = await _userManager.CreateAsync(user, registerUser.Password);
-                if (!result.Succeeded)
-                {
-                    return StatusCode(StatusCodes.Status500InternalServerError,
-                         new Response { Status = "Error", Message = "User Failed to Create." });
-                }
-                await _userManager.AddToRoleAsync(user,role);
-
-                var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
-                var confirmationLink  = Url.Action(nameof(ConfirmEmail),"Authentication",new {token, email = user.Email});
-                var message = new Message(new string[] { user.Email! }, "Confirmation email link", confirmationLink);
+                await _user.AssignRoleToUserAsync(registerUser.Roles, tokenResponse.Response.User);
+                var confirmationLink = Url.Action(nameof(ConfirmEmail), "Authentication", new { tokenResponse.Response, email = registerUser.Email });
+                var message = new Message(new string[] { registerUser.Email! }, "Confirmation email link", confirmationLink);
                 _emailService.SendEmail(message);
                 return StatusCode(StatusCodes.Status200OK,
-                      new Response { Status = "Success", Message = $"User Created & Email Sent to {user.Email} Successfully" });
+                    new Response { Status = "Success", Message = "Email Verified Successfully." });
             }
-            else
-            {
-                return StatusCode(StatusCodes.Status500InternalServerError,
-                    new Response { Status = "Error", Message = "This role Doesnot Exist." });
-            }
-            
+            return StatusCode(StatusCodes.Status500InternalServerError,
+                     new Response { IsSuccess = tokenResponse.IsSuccess, Message = tokenResponse.Message });
         }
  
         [HttpGet]
